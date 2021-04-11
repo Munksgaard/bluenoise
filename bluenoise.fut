@@ -439,27 +439,18 @@ let bluenoise_mask_fft = normalize_i32 (bluenoise (blur_fft ker_64) ibp)
 
 -- ==
 -- entry: blur_naive_bench
--- compiled input @ data/[32][32]bool.in
--- output @ data/[32][32]f32.out
--- compiled input @ data/[64][64]bool.in
--- output @ data/[64][64]f32.out
--- compiled input @ data/[128][128]bool.in
--- output @ data/[128][128]f32.out
--- compiled input @ data/[256][256]bool.in
--- output @ data/[256][256]f32.out
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }
+-- compiled random input { [128][128]bool }
 entry blur_naive_bench [n] (img: [n][n]bool): [n][n]f32 =
   blur_naive (gaussian_kernel n) img
 
 -- ==
 -- entry: blur_fft_bench
--- compiled input @ data/[32][32]bool.in
--- output @ data/[32][32]f32.out
--- compiled input @ data/[64][64]bool.in
--- output @ data/[64][64]f32.out
--- compiled input @ data/[128][128]bool.in
--- output @ data/[128][128]f32.out
--- compiled input @ data/[256][256]bool.in
--- output @ data/[256][256]f32.out
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }
+-- compiled random input { [128][128]bool }
+-- compiled random input { [256][256]bool }
 entry blur_fft_bench [n] (img: [n][n]bool): [n][n]f32 =
   blur_fft (gaussian_kernel n) img
 
