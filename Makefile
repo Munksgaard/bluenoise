@@ -1,5 +1,8 @@
 all: bluenoise.html
 
+index.html: bluenoise.md
+	pandoc $< -s -t html > $@
+
 %.html: %.md
 	pandoc $< -s -t html > $@
 

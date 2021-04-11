@@ -5,7 +5,7 @@
   <meta name="generator" content="pandoc" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <meta name="author" content="Philip Munksgaard" />
-  <meta name="dcterms.date" content="2021-03-23" />
+  <meta name="dcterms.date" content="2021-04-09" />
   <title>Blue Noise in Futhark</title>
   <style>
     html {
@@ -154,10 +154,10 @@
 <header id="title-block-header">
 <h1 class="title">Blue Noise in Futhark</h1>
 <p class="author">Philip Munksgaard</p>
-<p class="date">March 23, 2021</p>
+<p class="date">April 9, 2021</p>
 </header>
 <h1 id="introduction">Introduction</h1>
-<p>A while ago, I read Surma’s excellent article on <a href="https://surma.dev/things/ditherpunk/">dithering</a>. Immediately, it sparked my interest in the game <em>Return of the Obra Dinn</em>, which I’ve since enjoyed immensely. I also thought it would be fun to try to implement some of the dithering algorithms he’s describing in Futhark, but I never really got around to it. Until now!</p>
+<p>A while ago, I read Surma’s excellent article on <a href="https://surma.dev/things/ditherpunk/">dithering</a>. Immediately, it sparked my interest in the game <a href="https://obradinn.com/">Return of the Obra Dinn</a>, which I’ve since enjoyed immensely. I also thought it would be fun to try to implement some of the dithering algorithms he’s describing in Futhark, but I never really got around to it. Until now!</p>
 <p>I’ll mainly be focusing on the blue noise filter, as that seemed like the most interesting one, but I’ll also be implementing the Bayer filter and perhaps a few others. I’ll skip most of the details about how dithering works and what the purpose is, and instead direct you to the article linked above. The purpose of this post is to illustrate how we can implement the algorithms described using Futhark.</p>
 <p>By the way, this blog post was written using <code>futhark literate</code> so you can inspect the entire source code at your leisure.</p>
 <p>With all that out of the way, let’s dive in.</p>
@@ -169,7 +169,7 @@
 <figure>
 <img src="light-original.png" alt="A black-and-white photograph of San Francisco’s Bay Bridge." /><figcaption aria-hidden="true">A black-and-white photograph of San Francisco’s Bay Bridge.</figcaption>
 </figure>
-<p>Loading images into futhark literate returns pixels in ARGB format in the form of <code>[][]u32</code>. We’re only interested in greyscale images, so let’s write a few functions to convert an ARGB image into greyscale. We’ll use <code>f32</code> values between 0 and 1 to represent greyscale, with 0 being black and 1 being white. We also immediately perform the gamma-correction, so we can meaningfully work with the greyscale images from now on.</p>
+<p>Loading images into futhark literate returns pixels in ARGB format in the form of <code>[][]u32</code>. We’re only interested in greyscale images, so let’s write a few functions to convert an ARGB image into greyscale. We’ll use <code>f32</code> values between 0 and 1 to represent greyscale, with 0 being black and 1 being white. We also immediately perform some gamma-correction, so we can meaningfully work with greyscale images from now on.</p>
 <pre class="futhark"><code>let unpack_rgb (pixel: u32): (u8, u8, u8) =
   (u8.u32 pixel,
    u8.u32 (pixel &gt;&gt; 8),
@@ -178,10 +178,10 @@
 let brightness (pixel: u32): f32 =
   let (r, g, b) = unpack_rgb pixel
   -- We could use just one of the channels, but this should give us the same
-  -- result.
-  in (f32.u8 r + f32.u8 g + f32.u8 b) / (255.0 * 3)
-
-let to_linear (b: f32): f32 =
+  -- result when the input images are already greyscale.
+  in (f32.u8 r + f32.u8 g + f32.u8 b) / (255.0 * 3)</code></pre>
+<p>This gamma-correction formula is from <a href="https://en.wikipedia.org/wiki/SRGB#Specification_of_the_transformation">Wikipedia</a></p>
+<pre class="futhark"><code>let to_linear (b: f32): f32 =
   if b &lt;= 0.04045 then
     b / 12.92
   else
@@ -190,13 +190,13 @@ let to_linear (b: f32): f32 =
 let greyscale [n][m] (img: [n][m]u32): [n][m]f32 =
   map (map (to_linear &lt;-&lt; brightness)) img</code></pre>
 <h1 id="quantizing">Quantizing</h1>
-<p>Now we can try to apply the simple quantization method of simply checking if each pixel is below or above 0.5 in order to determine if it should be black or white:</p>
+<p>Now we can try to apply the simple quantization method of checking if each pixel is below or above 0.5 in order to determine if it should be black or white:</p>
 <pre class="futhark"><code>let quantize [n][m] (img: [n][m]f32): [n][m]bool =
-  map (map (\b -&gt; if b &gt; 0.5 then true else false)) img</code></pre>
+  map (map (&gt; 0.5)) img</code></pre>
 <pre><code>&gt; :img quantize (greyscale ($loadimg &quot;dark-original.png&quot;))</code></pre>
-<p><img src="bluenoise-img/e65e0cf22b1c21a-img.png" /></p>
+<p><img src="bluenoise-img/f34e158870bc43ce-img.png" /></p>
 <pre><code>&gt; :img quantize (greyscale ($loadimg &quot;light-original.png&quot;))</code></pre>
-<p><img src="bluenoise-img/dd3ea9b33cb0f2a4-img.png" /></p>
+<p><img src="bluenoise-img/625ad8269a94a938-img.png" /></p>
 <p>Note that I use booleans to represent pure black-and-white pixels: <code>true</code> is white and <code>false</code> is black.</p>
 <p>As stated in the original article, this method is pretty unsatisfying. We can barely see what’s depicted.</p>
 <p>Let’s try with random noise instead.</p>
@@ -212,17 +212,22 @@ let quantize_random [n][m] (seed: i32) (img: [n][m]f32): [n][m]bool =
   -- For each pixel apply the randomness factor and quantize
   in map2 (map2 (\rng pixel -&gt;
                    let (_, x) = d.rand (0, 1) rng
-                   in if pixel + (x - 0.5) &gt; 0.5
-                      then true
-                      else false))
+                   in pixel &gt; x))
           rngs img</code></pre>
 <pre><code>&gt; :img quantize_random 123i32 (greyscale ($loadimg &quot;dark-original.png&quot;))</code></pre>
-<p><img src="bluenoise-img/92d78ab679f1c206-img.png" /></p>
+<p><img src="bluenoise-img/c8d157e1275c96d2-img.png" /></p>
 <pre><code>&gt; :img quantize_random 123i32 (greyscale ($loadimg &quot;light-original.png&quot;))</code></pre>
-<p><img src="bluenoise-img/f67350e7932d6730-img.png" /></p>
+<p><img src="bluenoise-img/dd00ae84360f089c-img.png" /></p>
 <h1 id="dithering">Dithering</h1>
-<p>Next we come to the dithering algorithsm. The first one is the Bayer dithering, which uses Bayer matrices.</p>
-<p><code>concat_m</code> takes four equal-sized matrices and arranges them in a square matrix.</p>
+<p>What we’re really doing when we’re quantizing, is to compare each pixel in the original image to a <em>mask</em>. We’ve seen two cases, one where we compare to a mask where all the values are 0.5, and one where the mask is randomly generated, but many other masks exist. We can also imagine that it might not be necessary for the mask to have the same size as the input image, if we can just tile the original image with the mask image.</p>
+<p>This generalized process is called <em>dithering</em>, so let’s write a function to apply a dither mask to an image:</p>
+<pre class="futhark"><code>let dither [n][m][n&#39;][m&#39;] (img: [n][m]f32) (mask: [n&#39;][m&#39;]f32): [n][m]bool =
+  let helper i j pixel = pixel &gt; mask[i % n&#39;, j % m&#39;]
+  in map2 (\i -&gt; map2 (helper i) (iota m))
+          (iota n) img</code></pre>
+<h1 id="bayer-dithering">Bayer Dithering</h1>
+<p>Now let’s look at some masks. The first one is the Bayer mask, which uses <a href="https://en.wikipedia.org/wiki/Ordered_dithering#Pre-calculated_threshold_maps">Bayer matrices</a>.</p>
+<p>First, we need a helper function: <code>concat_m</code> takes four equal-sized matrices and arranges them in a square matrix.</p>
 <pre class="futhark"><code>let concat_m [n] &#39;t (xss1: [n][n]t) (xss2: [n][n]t) (xss3: [n][n]t) (xss4: [n][n]t): [][]t =
   let n2 = n * 2
   in concat (transpose (concat_to n2 (transpose xss1) (transpose xss2)))
@@ -239,113 +244,37 @@ let quantize_random [n][m] (seed: i32) (img: [n][m]f32): [n][m]bool =
                   (helper 3 bayer)
                   (helper 1 bayer)</code></pre>
 <p>Note that we should perhaps use the by bit-arithmetic method instead, or at least figure out which one is faster: https://en.wikipedia.org/wiki/Ordered_dithering</p>
-<p>We’ll also need to be able to normalize Bayer filters (and later bluenoise filters). For that we’ll introduce <code>normalize</code>:</p>
-<pre class="futhark"><code>let normalize [n][m] (xss: [n][m]i32): [n][m]f32 =
+<p>We’ll also need to be able to normalize Bayer filters (and later bluenoise filters). For that we’ll introduce <code>normalize_i32</code>:</p>
+<pre class="futhark"><code>let normalize_i32 [n][m] (xss: [n][m]i32): [n][m]f32 =
   let maximum = i32.maximum (map i32.maximum xss)
   in map (map (\x -&gt; f32.i32 x / f32.i32 maximum)) xss</code></pre>
-<p>Finally, <code>dither</code> is the dithering function to apply a dither mask to an image.</p>
-<pre class="futhark"><code>let dither [n1][m1][n2][m2] (img: [n1][m1]f32) (mask: [n2][m2]f32): [n1][m1]f32 =
-  let helper i j pixel =
-    if pixel &gt; mask[i % n2, j % m2]
-    then 1.0
-    else 0.0
-  in map2 (\i -&gt; map2 (helper i) (iota m1))
-          (iota n1) img</code></pre>
-<p>Let’s see some results</p>
-<pre class="futhark"><code>let bayer0 = normalize (bayer 0)
-let bayer1 = normalize (bayer 1)
-let bayer2 = normalize (bayer 2)
-let bayer3 = normalize (bayer 3)</code></pre>
+<p>Let’s see some results. First we create the first four bayer matrices, to see the effect of larger matrices on the dither result:</p>
+<pre class="futhark"><code>let bayer0 = normalize_i32 (bayer 0)
+let bayer1 = normalize_i32 (bayer 1)
+let bayer2 = normalize_i32 (bayer 2)
+let bayer3 = normalize_i32 (bayer 3)</code></pre>
+<p>And now let’s see what we get.</p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bayer0</code></pre>
-<p><img src="bluenoise-img/81e9f00437567054-img.png" /></p>
+<p><img src="bluenoise-img/573d38d5a4f77368-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bayer0</code></pre>
-<p><img src="bluenoise-img/9912f14ec12271a2-img.png" /></p>
+<p><img src="bluenoise-img/63743c1677b17e16-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bayer1</code></pre>
-<p><img src="bluenoise-img/81e9f004385671e7-img.png" /></p>
+<p><img src="bluenoise-img/573d38d5a5f774fb-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bayer1</code></pre>
-<p><img src="bluenoise-img/9912f14ec2227335-img.png" /></p>
+<p><img src="bluenoise-img/63743c1678b17fa9-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bayer2</code></pre>
-<p><img src="bluenoise-img/81e9f0043956737a-img.png" /></p>
+<p><img src="bluenoise-img/573d38d5a6f7768e-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bayer2</code></pre>
-<p><img src="bluenoise-img/9912f14ebf226e7c-img.png" /></p>
+<p><img src="bluenoise-img/63743c1675b17af0-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bayer3</code></pre>
-<p><img src="bluenoise-img/81e9f0043a56750d-img.png" /></p>
+<p><img src="bluenoise-img/573d38d5a7f77821-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bayer3</code></pre>
-<p><img src="bluenoise-img/9912f14ec022700f-img.png" /></p>
+<p><img src="bluenoise-img/63743c1676b17c83-img.png" /></p>
 <p>I think that looks pretty good!</p>
-<h1 id="blue-noise">Blue noise</h1>
+<h1 id="blue-noise">Blue Noise</h1>
 <p>Let’s move on to blue noise filters, which is another way of generating masks for dithering. It’s based on the <a href="https://www.spiedigitallibrary.org/conference-proceedings-of-spie/1913/0000/Void-and-cluster-method-for-dither-array-generation/10.1117/12.152707.pdf?casa_token=J16yJDRtYWcAAAAA:F4avF1zsEbK1aTUDjtQWXcEx9ixwE7IFB3ZicgBrhFdzeO_SrKHfXRg3p39C88ms_0LPdJ2-C4k">void-and-cluster method as originally described by Robert Ulichney</a>.</p>
-<p>I’ve only implemented the naive version, which computes everyting in the spatial domain. I’ll see if I can’t get around to implementing the frequency-domain method that Surma described.</p>
-<p>First, we need to be able to generate the input pattern, which is just a randomly generated binary pattern:</p>
-<p>Now, for computing the gaussian, we need to choose a value for σ:</p>
-<pre class="futhark"><code>let sigma: f32 = 1.5</code></pre>
-<p>For the filter, we use the gaussian function suggested by Ulichney:</p>
-<pre class="futhark"><code>let gaussian (x: i64) (y: i64): f32 =
-  f32.e ** (- (f32.i64 x ** 2 + f32.i64 y ** 2) / (2 * sigma ** 2))</code></pre>
-<p>The <code>dither_value</code> function is a straight-forward implementation of DA from the paper:</p>
-<pre class="futhark"><code>let dither_value [M] (bp: [M][M]bool) (x: i64) (y: i64): f32 =
-  map (\p -&gt;
-         let p = p - M/2
-         in map (\q -&gt;
-                   let q = q - M / 2
-                   let p&#39; = (M + x - p) % M
-                   let q&#39; = (M + y - q) % M
-                   in f32.bool bp[p&#39;, q&#39;] * gaussian p q)
-                (iota M)
-      )
-      (iota M)
-  |&gt; map f32.sum
-  |&gt; f32.sum</code></pre>
-<p>Having implemented <code>dither_value</code>, we can now implement the <code>tightest_cluster</code> and <code>largest_void</code> functions. Really, they are quite similar, and we could certainly abstract them out into one function, but keeping them separate makes it more clear what they do.</p>
-<pre class="futhark"><code>let tightest_cluster [n] (inp: [n][n]bool): (i64, i64) =
-  -- First compute, for each pixel in `inp`, the dither_value. Return also the
-  -- indices for each pixel and its boolean value.
-  map2 (\i row -&gt; map2 (\j v -&gt; ((i, j), v, dither_value inp i j))
-                       (indices row)
-                       row)
-       (indices inp) inp
-  -- Flatten the matrix so we are working on a single-dimensional array.
-  |&gt; flatten
-  -- Find the highest-valued pixel, considering only pixels that are `true` in
-  -- the original input.
-  |&gt; reduce_comm (\(idx, x, v) (idx&#39;, x&#39;, v&#39;) -&gt;
-                    if v &gt; v&#39; || !x&#39;
-                    then (idx, x, v)
-                    else (idx&#39;, x&#39;, v&#39;))
-                 ((-1, -1), false, f32.lowest)
-  |&gt; (.0)
-
-let largest_void [n] (inp: [n][n]bool): (i64, i64) =
-  map2 (\i row -&gt; map2 (\j v -&gt; ((i, j), v, dither_value inp i j))
-                       (indices row)
-                       row)
-       (indices inp) inp
-  |&gt; flatten
-  |&gt; reduce_comm (\(idx, x, v) (idx&#39;, x&#39;, v&#39;) -&gt;
-                    if v &lt; v&#39; || x&#39;
-                    then (idx, x, v)
-                    else (idx&#39;, x&#39;, v&#39;))
-                 ((-1, -1), true, f32.highest)
-  |&gt; (.0)</code></pre>
-<p>With these building blocks in place, let’s implement <code>initial_binary_pattern</code>. <code>ip</code> is the input pattern, and the result is the initial binary pattern.</p>
-<pre class="futhark"><code>let initial_binary_pattern [n] (ip: *[n][n]bool): *[n][n]bool =
-  let (_, _, res) =
-    -- Initialize the two indices with invalid but different values
-    loop ((i, j), (i&#39;, j&#39;), ip) = ((-2, -2), (-1, -1), ip)
-    -- While the the two indices are different
-    while (i, j) != (i&#39;, j&#39;) do
-      -- Compute the location of the tightest cluster
-      let (i, j) = tightest_cluster ip
-      -- Set that location to false
-      let ip[i, j] = false
-      -- Compute the location of the largest void
-      let (i&#39;, j&#39;) = largest_void ip
-      -- Set that location to true
-      let ip[i&#39;, j&#39;] = true
-      -- Repeat
-      in ((i, j), (i&#39;, j&#39;), ip)
-  in res</code></pre>
-<p>In order to compute the initial binary pattern, we need a random input pattern, which will be generated by the <code>rand_binary_pattern</code> function:</p>
+<p>The algorithm has takes a random binary pattern as input, processes that into a <em>initial binary pattern</em> and then uses that initial binary pattern to generate the final mask through three phases.</p>
+<p>First, we need to be able to generate the input pattern, which is just a randomly generated binary pattern, where less than half the values are white:</p>
 <pre class="futhark"><code>module dist = uniform_int_distribution i64 minstd_rand
 
 let rand_binary_pattern (seed: i32) (n: i64) (m: i64): [n][m]bool =
@@ -354,14 +283,83 @@ let rand_binary_pattern (seed: i32) (n: i64) (m: i64): [n][m]bool =
   let xss = replicate n (replicate m false)
   -- Generate a minority number of indices and set them to `true`.
   let rngs = minstd_rand.split_rng (n * m / 4) rng
-  let (_, idxs, vals) =
+  let (idxs, vals) =
     map (\rng -&gt;
            let (rng, y) = dist.rand (0, n) rng
-           let (rng, x) = dist.rand (0, m) rng
-           in (rng, (y, x), true))
+           let (_, x) = dist.rand (0, m) rng
+           in ((y, x), true))
         rngs
-    |&gt; unzip3
+    |&gt; unzip
   in scatter_2d xss idxs vals</code></pre>
+<p>The algorithm depends on being able to find the <em>tightest cluster</em> and <em>largest void</em> of a given image. To find the tightest cluster, we apply a gaussian blur to the image and find the brightest pixel in the result. To find the largest void, we do the same but try to find the darkest pixel in the result.</p>
+<p>We therefore need to be able to compute a gaussian kernel that we can use to blur with. We use the gaussian function that Surma also uses, which is a slightly modified version of the one suggested by Ulichney.</p>
+<pre class="futhark"><code>let gaussian_kernel (n: i64): [n][n]f32 =
+  let sigma: f32 = 1.5
+  let factor = 1 / (2 * f32.pi * sigma ** 2)
+  let gaussian x y = factor * f32.e ** (- (f32.i64 (x - n / 2) ** 2 +
+                                           f32.i64 (y - n / 2) ** 2) /
+                                          (2 * sigma ** 2))
+  in tabulate_2d n n gaussian</code></pre>
+<p>Now we can implement the <code>blur_naive</code> function:</p>
+<pre class="futhark"><code>let blur_naive [n] (kernel: [n][n]f32) (inp: [n][n]bool) =
+  let halfn = n / 2
+  let blur_pixel (py: i64) (px: i64): f32 =
+    map2 (\qy -&gt;
+            map2 (\qx g -&gt;
+                    let x = (px + qx - halfn) % n
+                    let y = (py + qy - halfn) % n
+                    in  f32.bool inp[y, x] * g)
+                 (iota n))
+         (iota n)
+         kernel
+    |&gt; flatten
+    |&gt; f32.sum
+  in tabulate_2d n n blur_pixel</code></pre>
+<p>Having implemented our blur function, we can now implement the <code>tightest_cluster</code> and <code>largest_void</code> functions. Really, they are quite similar, and we could certainly abstract them out into one function, but keeping them separate makes it more clear what they do.</p>
+<pre class="futhark"><code>let tightest_cluster [n] (blur: [n][n]bool -&gt; [n][n]f32) (inp: [n][n]bool): (i64, i64) =
+  -- Blur the input image
+  blur inp
+  -- Return also the indices for each pixel and its boolean value.
+  |&gt; map3 zip3 (tabulate_2d n n (\i j -&gt; (i, j))) inp
+  -- Flatten the matrix so we are working on a single-dimensional array.
+  -- Find the highest-valued pixel, considering only pixels that are `true` in
+  -- the original input.
+  |&gt; flatten
+  |&gt; reduce_comm (\(idx, x, v) (idx&#39;, x&#39;, v&#39;) -&gt;
+                    if v &gt; v&#39; || !x&#39;
+                    then (idx, x, v)
+                    else (idx&#39;, x&#39;, v&#39;))
+                 ((-1, -1), false, f32.lowest)
+  |&gt; (.0)
+
+let largest_void [n] (blur: [n][n]bool -&gt; [n][n]f32) (inp: [n][n]bool): (i64, i64) =
+  blur inp
+  |&gt; map3 zip3 (tabulate_2d n n (\i j -&gt; (i, j))) inp
+  |&gt; flatten
+  |&gt; reduce_comm (\(idx, x, v) (idx&#39;, x&#39;, v&#39;) -&gt;
+                    if v &lt; v&#39; || x&#39;
+                    then (idx, x, v)
+                    else (idx&#39;, x&#39;, v&#39;))
+                 ((-1, -1), true, f32.highest)
+  |&gt; (.0)</code></pre>
+<p>With these building blocks in place, let’s implement <code>initial_binary_pattern</code>. <code>ip</code> is the input pattern, and the result is the initial binary pattern.</p>
+<pre class="futhark"><code>let initial_binary_pattern [n] (blur: [n][n]bool -&gt; [n][n]f32) (ip: *[n][n]bool): *[n][n]bool =
+  let (_, _, res) =
+    -- Initialize the two indices with invalid but different values
+    loop ((i, j), (i&#39;, j&#39;), ip) = ((-2, -2), (-1, -1), ip)
+    -- While the the two indices are different
+    while (i, j) != (i&#39;, j&#39;) do
+      -- Compute the location of the tightest cluster
+      let (i, j) = tightest_cluster blur ip
+      -- Set that location to false
+      let ip[i, j] = false
+      -- Compute the location of the largest void
+      let (i&#39;, j&#39;) = largest_void blur ip
+      -- Set that location to true
+      let ip[i&#39;, j&#39;] = true
+      -- Repeat
+      in ((i, j), (i&#39;, j&#39;), ip)
+  in res</code></pre>
 <p>Finally, in order to visualize the smallish patterns, let’s write some functions to scale them up to arbitrary pixels sizes:</p>
 <pre class="futhark"><code>let scale [n][m] &#39;t (n2: i64) (m2: i64) (img: [n][m]t): *[n2][m2]t =
   let y_scale = f32.i64 n2 / f32.i64 n
@@ -373,11 +371,13 @@ let scale_f32: (i64 -&gt; i64 -&gt; [][]f32 -&gt; *[][]f32) = scale
 
 let scale_bool: (i64 -&gt; i64 -&gt; [][]bool -&gt; *[][]bool) = scale</code></pre>
 <p>With all that in hand, let’s take a look at what a generated initial binary pattern could look like:</p>
-<pre class="futhark"><code>let ibp = initial_binary_pattern (rand_binary_pattern 123 64 64)</code></pre>
+<pre class="futhark"><code>let ker_64 = gaussian_kernel 64
+
+let ibp = initial_binary_pattern (blur_naive ker_64) (rand_binary_pattern 123 64 64)</code></pre>
 <pre><code>&gt; :img scale_bool 200i64 200i64 ibp</code></pre>
-<p><img src="bluenoise-img/3aa2086d49c724ee-img.png" /></p>
+<p><img src="bluenoise-img/4d72e5849625d49a-img.png" /></p>
 <p>That looks pretty good, I think! So now, let’s go about turning it into a blue noise pattern. The <code>bluenoise</code> function is a pretty straight-forward implementation of the algorithm as described in Ulichneys original paper:</p>
-<pre class="futhark"><code>let bluenoise [n] (ibp: [n][n]bool) : [n][n]i32 =
+<pre class="futhark"><code>let bluenoise [n] (blur: [n][n]bool -&gt; [n][n]f32) (ibp: [n][n]bool) : [n][n]i32 =
   -- Load the binary pattern with the initial binary pattern
   let bp = copy ibp
 
@@ -396,7 +396,7 @@ let scale_bool: (i64 -&gt; i64 -&gt; [][]bool -&gt; *[][]bool) = scale</code></p
   let (dit, _, _) =
     loop (dit, bp, rank)
     while rank &gt;= 0 do
-      let (i, j) = tightest_cluster bp
+      let (i, j) = tightest_cluster blur bp
       let bp[i, j] = false
       let dit[i, j] = rank
       in (dit, bp, rank - 1)
@@ -408,7 +408,7 @@ let scale_bool: (i64 -&gt; i64 -&gt; [][]bool -&gt; *[][]bool) = scale</code></p
   let (dit, bp, rank) =
     loop (dit, bp, rank)
     while rank &lt; i32.i64 (n * n / 2) do
-      let (i, j) = largest_void bp
+      let (i, j) = largest_void blur bp
       let bp[i, j] = true
       let dit[i, j] = rank
       in (dit, bp, rank + 1)
@@ -420,22 +420,117 @@ let scale_bool: (i64 -&gt; i64 -&gt; [][]bool -&gt; *[][]bool) = scale</code></p
   let (dit, _, _) =
     loop (dit, bp, rank)
     while rank &lt; i32.i64 (n * n) do
-      let (i, j) = tightest_cluster bp
+      let (i, j) = tightest_cluster blur bp
       let bp[i, j] = false
       let dit[i, j] = rank
       in (dit, bp, rank + 1)
 
   in dit</code></pre>
 <p>Let’s take a look:</p>
-<pre class="futhark"><code>let bluenoise_mask = normalize (bluenoise ibp)</code></pre>
+<pre class="futhark"><code>let bluenoise_mask = normalize_i32 (bluenoise (blur_naive ker_64) ibp)</code></pre>
 <pre><code>&gt; :img scale_f32 200i64 200i64 bluenoise_mask</code></pre>
-<p><img src="bluenoise-img/576f9945c2f29d39-img.png" /></p>
+<p><img src="bluenoise-img/5049ed6c7ccf96a5-img.png" /></p>
 <p>Looks pretty random to me. Let’s try to apply it to our images:</p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bluenoise_mask</code></pre>
-<p><img src="bluenoise-img/6a5f4c9349ea19ee-img.png" /></p>
+<p><img src="bluenoise-img/49f1048fbe048d5a-img.png" /></p>
 <pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bluenoise_mask</code></pre>
-<p><img src="bluenoise-img/e0f27b617907cf50-img.png" /></p>
-<p>Cool! I think I’ll leave this here for now. I have other work to do…</p>
-<p>So long, and thanks for following along!</p>
+<p><img src="bluenoise-img/b3ca30f79433d7dc-img.png" /></p>
+<h1 id="blue-noise-in-the-frequency-space">Blue noise in the frequency space</h1>
+<p>The naive blue noise implementation is pretty slow, even in Futhark. Let’s try to see if we can speed it up, by applying the gaussian in the frequency space.</p>
+<p>First, we need the fft library, and the complex library for convenience:</p>
+<pre class="futhark"><code>import &quot;lib/github.com/diku-dk/fft/stockham-radix-2&quot;
+import &quot;lib/github.com/diku-dk/complex/complex&quot;
+
+module fft32 = mk_fft f32
+module c32 = mk_complex f32</code></pre>
+<p>We also need to be able to center an the frequency-space image</p>
+<pre class="futhark"><code>let center_fft [n] &#39;t (img: [n][n]t): [n][n]t =
+  map (rotate (n / 2)) img
+  |&gt; rotate (n / 2)</code></pre>
+<p>To blur, we transform both the kernel and the input image to the frequency space and multiply them together</p>
+<pre class="futhark"><code>let blur_fft [n] (kernel: [n][n]f32) (inp: [n][n]bool): [n][n]f32 =
+  let kernel&#39; = kernel
+             |&gt; fft32.fft2_re
+             |&gt; center_fft
+  let inp&#39; = map (map f32.bool) inp
+             |&gt; fft32.fft2_re
+             |&gt; center_fft
+  in map2 (map2 (c32.*)) kernel&#39; inp&#39;
+     |&gt; center_fft
+     |&gt; fft32.ifft2
+     |&gt; center_fft
+     |&gt; map (map c32.mag)
+
+let bluenoise_mask_fft = normalize_i32 (bluenoise (blur_fft ker_64) ibp)</code></pre>
+<pre><code>&gt; :img scale_f32 200i64 200i64 bluenoise_mask_fft</code></pre>
+<p><img src="bluenoise-img/bfc4949951757c6c-img.png" /></p>
+<p>Looks good. Let’s try to apply it to our images:</p>
+<pre><code>&gt; :img dither (greyscale ($loadimg &quot;dark-original.png&quot;)) bluenoise_mask_fft</code></pre>
+<p><img src="bluenoise-img/6edd058f3409197-img.png" /></p>
+<pre><code>&gt; :img dither (greyscale ($loadimg &quot;light-original.png&quot;)) bluenoise_mask_fft</code></pre>
+<p><img src="bluenoise-img/daede3de8d878055-img.png" /></p>
+<h1 id="benchmarking">Benchmarking</h1>
+<pre class="futhark"><code>-- ==
+-- entry: blur_naive_bench
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }
+-- compiled random input { [128][128]bool }</code></pre>
+<pre class="futhark"><code>entry blur_naive_bench [n] (img: [n][n]bool): [n][n]f32 =
+  blur_naive (gaussian_kernel n) img</code></pre>
+<pre class="futhark"><code>-- ==
+-- entry: blur_fft_bench
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }
+-- compiled random input { [128][128]bool }
+-- compiled random input { [256][256]bool }</code></pre>
+<pre class="futhark"><code>entry blur_fft_bench [n] (img: [n][n]bool): [n][n]f32 =
+  blur_fft (gaussian_kernel n) img</code></pre>
+<pre class="futhark"><code>-- ==
+-- entry: bluenoise_test_naive
+-- compiled random input { [16][16]bool }
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }</code></pre>
+<pre class="futhark"><code>entry bluenoise_test_naive [n] (inp: *[n][n]bool): *[n][n]i32 =
+  let kernel = gaussian_kernel n
+  let ibp = initial_binary_pattern (blur_naive kernel) inp
+  in bluenoise (blur_naive kernel) ibp</code></pre>
+<pre class="futhark"><code>-- ==
+-- entry: bluenoise_test_fft
+-- compiled random input { [16][16]bool }
+-- compiled random input { [32][32]bool }
+-- compiled random input { [64][64]bool }
+-- compiled random input { [128][128]bool }</code></pre>
+<pre class="futhark"><code>entry bluenoise_test_fft [n] (inp: *[n][n]bool): *[n][n]i32 =
+  let kernel = gaussian_kernel n
+  let ibp = initial_binary_pattern (blur_naive kernel) inp
+  in bluenoise (blur_fft kernel) ibp</code></pre>
+<p>Results on a GeForce RTX 2080 Ti:</p>
+<pre><code>$ futhark bench --backend=opencl bluenoise.fut
+Compiling bluenoise.fut...
+Reporting average runtime of 10 runs for each dataset.
+
+bluenoise.fut:blur_naive_bench (using bluenoise.fut.tuning):
+data/[32][32]bool.in:          102μs (RSD: 0.149; min: -37%; max: +25%)
+data/[64][64]bool.in:          410μs (RSD: 0.069; min: -12%; max: +10%)
+data/[128][128]bool.in:       4424μs (RSD: 0.005; min:  -1%; max:  +1%)
+data/[256][256]bool.in:      38266μs (RSD: 0.006; min:  -1%; max:  +1%)
+
+bluenoise.fut:blur_fft_bool (using bluenoise.fut.tuning):
+data/[32][32]bool.in:          159μs (RSD: 0.165; min: -31%; max: +25%)
+data/[64][64]bool.in:          175μs (RSD: 0.107; min: -14%; max: +20%)
+data/[128][128]bool.in:        179μs (RSD: 0.180; min: -35%; max: +26%)
+data/[256][256]bool.in:        133μs (RSD: 0.160; min: -18%; max: +29%)
+
+bluenoise.fut:bluenoise_test_naive (using bluenoise.fut.tuning):
+[16][16]bool:                23879μs (RSD: 0.003; min:  -1%; max:  +0%)
+[32][32]bool:                99598μs (RSD: 0.012; min:  -1%; max:  +2%)
+[64][64]bool:              5203831μs (RSD: 0.005; min:  -1%; max:  +1%)
+
+bluenoise.fut:bluenoise_test_fft (using bluenoise.fut.tuning):
+[16][16]bool:                40842μs (RSD: 0.076; min:  -8%; max:  +8%)
+[32][32]bool:               131507μs (RSD: 0.003; min:  -0%; max:  +0%)
+[64][64]bool:               522510μs (RSD: 0.002; min:  -0%; max:  +0%)
+[128][128]bool:            2110416μs (RSD: 0.009; min:  -1%; max:  +1%)</code></pre>
+<p>Surma mentions that it takes him about half a minute to generate a 64x64 blue noise texture on a 2018 MacBook Pro. In contrast, we do it in around half a second.</p>
 </body>
 </html>
