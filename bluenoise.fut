@@ -507,5 +507,4 @@ entry bluenoise_test_fft [n] (inp: *[n][n]bool): *[n][n]i32 =
 -- ```
 
 -- Surma mentions that it takes him about half a minute to generate a 64x64 blue
--- noise texture on a 2018 MacBook Pro. In contrast, we do it in around half a
--- second.
+-- noise texture on a 2018 MacBook Pro. We do it in around half a second.
